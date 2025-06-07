@@ -12,3 +12,9 @@ go run main.go
 
 go build -o oc-navigator
 ```
+
+Make sure you do -
+
+```
+oc login --token=sha256~TESTERTERTETERETETETETETETETET --server=https://api.openshiftapps.com
+```
