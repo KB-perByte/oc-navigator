@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -25,6 +26,7 @@ type OCNavigator struct {
 	mainFlex        *tview.Flex
 	mainLayout      *tview.Flex
 	menuList        *tview.List
+	menuFooter      *tview.TextView
 	detailView      *tview.TextView
 	commandView     *tview.TextView
 	statusBar       *tview.TextView
@@ -76,22 +78,29 @@ func (nav *OCNavigator) getCurrentProject() {
 func (nav *OCNavigator) initializeUI() {
 	// Create main components
 	nav.menuList = tview.NewList().ShowSecondaryText(true)
+	nav.menuFooter = tview.NewTextView().SetText("- Kini").SetTextAlign(tview.AlignCenter)
 	nav.detailView = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	nav.commandView = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	nav.statusBar = tview.NewTextView().SetDynamicColors(true)
 
 	// Style components
 	nav.menuList.SetBorder(true).SetTitle(" Navigation ").SetTitleAlign(tview.AlignLeft)
+	nav.menuFooter.SetBorder(true).SetBorderPadding(0, 0, 1, 1)
 	nav.detailView.SetBorder(true).SetTitle(" Details ").SetTitleAlign(tview.AlignLeft)
 	nav.commandView.SetBorder(true).SetTitle(" Command Output ").SetTitleAlign(tview.AlignLeft)
 
-	// Create flexible layout
+	// Create left panel with menu and footer
+	leftPanel := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nav.menuList, 0, 1, true).
+		AddItem(nav.menuFooter, 3, 0, false)
+
+	// Create right panel with details and command output
 	rightPanel := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(nav.detailView, 0, 1, false).
 		AddItem(nav.commandView, 0, 1, false)
 
 	nav.mainFlex = tview.NewFlex().
-		AddItem(nav.menuList, 0, 1, true).
+		AddItem(leftPanel, 0, 1, true).
 		AddItem(rightPanel, 0, 2, false)
 
 	nav.mainLayout = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -117,9 +126,9 @@ func (nav *OCNavigator) buildMainMenu() {
 			Submenu: []*MenuItem{
 				{Name: "List all projects", Command: "oc get projects", Description: "Show all available projects", IsExec: true},
 				{Name: "Current project info", Command: "oc project", Description: "Display current project information", IsExec: true},
-				{Name: "Switch project", Command: "oc project", Description: "Interactive project switching", IsExec: false},
-				{Name: "Create new project", Command: "oc new-project", Description: "Create a new OpenShift project", IsExec: false},
-				{Name: "Delete project", Command: "oc delete project", Description: "Delete an existing project", IsExec: false},
+				{Name: "Switch project", Command: "", Description: "Interactive project switching", IsExec: false},
+				{Name: "Create new project", Command: "", Description: "Create a new OpenShift project", IsExec: false},
+				{Name: "Delete project", Command: "", Description: "Delete an existing project", IsExec: false},
 			},
 		},
 		{
@@ -175,8 +184,8 @@ func (nav *OCNavigator) buildMainMenu() {
 				{Name: "Events", Command: "oc get events --sort-by=.metadata.creationTimestamp", Description: "Show recent events", IsExec: true},
 				{Name: "Node status", Command: "oc get nodes", Description: "Check node status", IsExec: true},
 				{Name: "Resource usage", Command: "oc top nodes", Description: "Show resource usage by nodes", IsExec: true},
-				{Name: "Pod logs", Command: "oc logs", Description: "View pod logs", IsExec: false},
-				{Name: "Follow logs", Command: "oc logs -f", Description: "Follow pod logs in real-time", IsExec: false},
+				{Name: "Pod logs", Command: "", Description: "View pod logs", IsExec: false},
+				{Name: "Follow logs", Command: "", Description: "Follow pod logs in real-time", IsExec: false},
 			},
 		},
 		{
@@ -244,10 +253,20 @@ func (nav *OCNavigator) onMenuSelect(index int, mainText string, secondaryText s
 	} else {
 		// Handle special cases
 		switch selectedItem.Name {
+		case "Switch project":
+			nav.showProjectSwitchDialog()
+		case "Create new project":
+			nav.showCreateProjectDialog()
+		case "Delete project":
+			nav.showDeleteProjectDialog()
 		case "Custom Commands":
 			nav.showCustomCommandDialog()
 		case "Command History":
 			nav.showCommandHistory()
+		case "Pod logs":
+			nav.showPodLogsDialog()
+		case "Follow logs":
+			nav.showFollowLogsDialog()
 		default:
 			nav.showItemDetails(selectedItem)
 		}
@@ -336,24 +355,178 @@ func (nav *OCNavigator) showCustomCommandDialog() {
 }
 
 func (nav *OCNavigator) showCommandHistory() {
+	historyText := "Command History"
+
+	for i, cmd := range nav.commandHistory {
+		historyText += fmt.Sprintf("\n%d. %s", i+1, cmd)
+	}
+
 	if len(nav.commandHistory) == 0 {
-		nav.setStatus("No commands in history")
-		return
+		historyText += "\n\nNo commands in history"
 	}
 
-	historyList := tview.NewList()
-	for i := len(nav.commandHistory) - 1; i >= 0; i-- {
-		cmd := nav.commandHistory[i]
-		historyList.AddItem(cmd, "", 0, nil)
-	}
+	modal := tview.NewModal().
+		SetText(historyText).
+		AddButtons([]string{"Close"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
 
-	historyList.SetSelectedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
-		nav.executeCommand(mainText)
-		nav.app.SetRoot(nav.mainLayout, true)
-	})
+	nav.app.SetRoot(modal, true)
+}
 
-	historyList.SetTitle(" Command History ").SetBorder(true)
-	nav.app.SetRoot(historyList, true)
+// showProjectSwitchDialog shows an input dialog for switching projects
+func (nav *OCNavigator) showProjectSwitchDialog() {
+	inputField := tview.NewInputField().
+		SetLabel("Enter project name: ").
+		SetFieldWidth(30).
+		SetAcceptanceFunc(tview.InputFieldMaxLength(50))
+
+	form := tview.NewForm().
+		AddFormItem(inputField).
+		AddButton("Switch", func() {
+			projectName := inputField.GetText()
+			if projectName != "" {
+				nav.executeCommand(fmt.Sprintf("oc project %s", projectName))
+				nav.getCurrentProject()
+				nav.updateStatusBar()
+			}
+			nav.app.SetRoot(nav.mainLayout, true)
+		}).
+		AddButton("Cancel", func() {
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
+
+	form.SetBorder(true).SetTitle(" Switch Project ").SetTitleAlign(tview.AlignLeft)
+	nav.app.SetRoot(form, true)
+}
+
+// showCreateProjectDialog shows an input dialog for creating a new project
+func (nav *OCNavigator) showCreateProjectDialog() {
+	nameField := tview.NewInputField().
+		SetLabel("Project name: ").
+		SetFieldWidth(30).
+		SetAcceptanceFunc(tview.InputFieldMaxLength(50))
+
+	descField := tview.NewInputField().
+		SetLabel("Description (optional): ").
+		SetFieldWidth(50).
+		SetAcceptanceFunc(tview.InputFieldMaxLength(100))
+
+	form := tview.NewForm().
+		AddFormItem(nameField).
+		AddFormItem(descField).
+		AddButton("Create", func() {
+			projectName := nameField.GetText()
+			description := descField.GetText()
+			if projectName != "" {
+				cmd := fmt.Sprintf("oc new-project %s", projectName)
+				if description != "" {
+					cmd += fmt.Sprintf(" --description=\"%s\"", description)
+				}
+				nav.executeCommand(cmd)
+				nav.getCurrentProject()
+				nav.updateStatusBar()
+			}
+			nav.app.SetRoot(nav.mainLayout, true)
+		}).
+		AddButton("Cancel", func() {
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
+
+	form.SetBorder(true).SetTitle(" Create New Project ").SetTitleAlign(tview.AlignLeft)
+	nav.app.SetRoot(form, true)
+}
+
+// showDeleteProjectDialog shows an input dialog for deleting a project
+func (nav *OCNavigator) showDeleteProjectDialog() {
+	inputField := tview.NewInputField().
+		SetLabel("Enter project name to delete: ").
+		SetFieldWidth(30).
+		SetAcceptanceFunc(tview.InputFieldMaxLength(50))
+
+	form := tview.NewForm().
+		AddFormItem(inputField).
+		AddButton("Delete", func() {
+			projectName := inputField.GetText()
+			if projectName != "" {
+				// Show confirmation dialog
+				nav.showDeleteConfirmationDialog(projectName)
+			} else {
+				nav.app.SetRoot(nav.mainLayout, true)
+			}
+		}).
+		AddButton("Cancel", func() {
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
+
+	form.SetBorder(true).SetTitle(" Delete Project ").SetTitleAlign(tview.AlignLeft)
+	nav.app.SetRoot(form, true)
+}
+
+// showDeleteConfirmationDialog shows a confirmation dialog before deleting a project
+func (nav *OCNavigator) showDeleteConfirmationDialog(projectName string) {
+	modal := tview.NewModal().
+		SetText(fmt.Sprintf("Are you sure you want to delete project '%s'?\nThis action cannot be undone!", projectName)).
+		AddButtons([]string{"Delete", "Cancel"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			if buttonLabel == "Delete" {
+				nav.executeCommand(fmt.Sprintf("oc delete project %s", projectName))
+				nav.getCurrentProject()
+				nav.updateStatusBar()
+			}
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
+
+	nav.app.SetRoot(modal, true)
+}
+
+// showPodLogsDialog shows an input dialog for viewing pod logs
+func (nav *OCNavigator) showPodLogsDialog() {
+	inputField := tview.NewInputField().
+		SetLabel("Enter pod name: ").
+		SetFieldWidth(30).
+		SetAcceptanceFunc(tview.InputFieldMaxLength(100))
+
+	form := tview.NewForm().
+		AddFormItem(inputField).
+		AddButton("View Logs", func() {
+			podName := inputField.GetText()
+			if podName != "" {
+				nav.executeCommand(fmt.Sprintf("oc logs %s", podName))
+			}
+			nav.app.SetRoot(nav.mainLayout, true)
+		}).
+		AddButton("Cancel", func() {
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
+
+	form.SetBorder(true).SetTitle(" View Pod Logs ").SetTitleAlign(tview.AlignLeft)
+	nav.app.SetRoot(form, true)
+}
+
+// showFollowLogsDialog shows an input dialog for following pod logs
+func (nav *OCNavigator) showFollowLogsDialog() {
+	inputField := tview.NewInputField().
+		SetLabel("Enter pod name: ").
+		SetFieldWidth(30).
+		SetAcceptanceFunc(tview.InputFieldMaxLength(100))
+
+	form := tview.NewForm().
+		AddFormItem(inputField).
+		AddButton("Follow Logs", func() {
+			podName := inputField.GetText()
+			if podName != "" {
+				nav.executeCommand(fmt.Sprintf("oc logs -f %s", podName))
+			}
+			nav.app.SetRoot(nav.mainLayout, true)
+		}).
+		AddButton("Cancel", func() {
+			nav.app.SetRoot(nav.mainLayout, true)
+		})
+
+	form.SetBorder(true).SetTitle(" Follow Pod Logs ").SetTitleAlign(tview.AlignLeft)
+	nav.app.SetRoot(form, true)
 }
 
 func (nav *OCNavigator) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
@@ -413,6 +586,19 @@ func (nav *OCNavigator) Run() error {
 	return nav.app.Run()
 }
 
+// executeCLICommand runs an external command (like oc) and prints its output to stdout/stderr.
+func executeCLICommand(command string, args ...string) error {
+	cmd := exec.Command(command, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	fmt.Printf("Executing: %s %s\n", command, strings.Join(args, " "))
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("failed to execute command '%s %s': %w", command, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
 func main() {
 	// Check if oc command is available
 	if _, err := exec.LookPath("oc"); err != nil {
@@ -420,9 +606,44 @@ func main() {
 		os.Exit(1)
 	}
 
-	navigator := NewOCNavigator()
+	switchProjectName := flag.String("project", "", "Switch to the specified OpenShift project before starting UI")
+	createProjectName := flag.String("create-project", "", "Create a new OpenShift project with the given name and exit")
+	deleteProjectName := flag.String("delete-project", "", "Delete an OpenShift project with the given name and exit")
 
+	flag.Parse()
+
+	if *createProjectName != "" {
+		fmt.Printf("Attempting to create project: %s\n", *createProjectName)
+		err := executeCLICommand("oc", "new-project", *createProjectName)
+		if err != nil {
+			log.Fatalf("Error creating project '%s': %v", *createProjectName, err)
+		}
+		fmt.Printf("Project '%s' creation command executed. Check 'oc projects' to verify.\n", *createProjectName)
+		return // Exit after creating
+	}
+
+	if *deleteProjectName != "" {
+		fmt.Printf("Attempting to delete project: %s\n", *deleteProjectName)
+		err := executeCLICommand("oc", "delete", "project", *deleteProjectName)
+		if err != nil {
+			log.Fatalf("Error deleting project '%s': %v", *deleteProjectName, err)
+		}
+		fmt.Printf("Project '%s' deletion command executed. Check 'oc projects' to verify.\n", *deleteProjectName)
+		return // Exit after deleting
+	}
+
+	if *switchProjectName != "" {
+		fmt.Printf("Attempting to switch to project: %s\n", *switchProjectName)
+		err := executeCLICommand("oc", "project", *switchProjectName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error switching to project '%s': %v. Starting TUI with current project.\n", *switchProjectName, err)
+		} else {
+			fmt.Printf("Successfully switched to project '%s'.\n", *switchProjectName)
+		}
+	}
+
+	navigator := NewOCNavigator()
 	if err := navigator.Run(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error running oc-navigator: %v", err)
 	}
 }
